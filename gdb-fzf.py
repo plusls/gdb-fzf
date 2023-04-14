@@ -1,7 +1,8 @@
 import ctypes
-from typing import List
+from typing import List, AnyStr
 import subprocess
-
+import gdb
+import os
 class HIST_ENTRY(ctypes.Structure):
     _fields_ = [
         ('line', ctypes.c_char_p),
@@ -42,13 +43,43 @@ def get_libreadline() -> ctypes.CDLL:
 @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int)
 def fzf_search_history (sign: int, key: int) -> int:
     libreadline = get_libreadline()
-    history = get_history(libreadline)
+    history_list = get_history_list(libreadline)
     libreadline.rl_crlf()
     rl_line_buffer_ptr = ctypes.c_char_p.in_dll(libreadline , "rl_line_buffer")
-    query = ctypes.string_at(rl_line_buffer_ptr).decode()
-    make_readline_line(libreadline, get_fzf_result(query, history))
+    query = ctypes.string_at(rl_line_buffer_ptr)
+    make_readline_line(libreadline, get_fzf_result(query, history_list))
     libreadline.rl_forced_update_display()
     return 0
+
+
+def run_gdb_command(command: str) -> bytes:
+    memfd = os.memfd_create("gdb-output", 0)
+    pid = os.getpid()
+    # 如果直接用 gdb.execute（‘complete xxx'), 若是 xxx 以空格结尾则会存在截断
+    gdb.execute(f"pipe {command}| cat >/proc/{pid}/fd/{memfd}", to_string=True)
+    with os.fdopen(memfd, 'rb') as f:
+        return f.read()
+
+@ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int)
+def fzf_auto_complete (sign: int, key: int) -> int:
+    libreadline = get_libreadline()
+    libreadline.rl_crlf()
+    rl_line_buffer_ptr = ctypes.c_char_p.in_dll(libreadline , "rl_line_buffer")
+    query = ctypes.string_at(rl_line_buffer_ptr)
+    query_str = query.decode()
+    query_complete_str_list = run_gdb_command(f'complete {query_str} ').split(b'\n')
+    if not query_str.endswith(' '):
+        idx = query_str.rfind(" ")
+        if idx == -1:
+            s = ''
+        else:
+            s = query_str[:idx]
+        query_complete_str_list += run_gdb_command(f'complete {s} ').split(b'\n')
+    make_readline_line(libreadline, get_fzf_result(query, query_complete_str_list))
+    libreadline.rl_forced_update_display()
+
+    return 0
+
 
 def make_readline_line(libreadline: ctypes.CDLL, s: bytes):
     rl_line_buffer_ptr = ctypes.c_char_p.in_dll(libreadline , "rl_line_buffer")
@@ -68,7 +99,7 @@ def make_readline_line(libreadline: ctypes.CDLL, s: bytes):
 
 
 
-def get_history(libreadline: ctypes.CDLL) -> List[bytes]:
+def get_history_list(libreadline: ctypes.CDLL) -> List[bytes]:
     hlist = libreadline.history_list()
     ret: List[bytes] = []
     if not hlist:
@@ -82,29 +113,43 @@ def get_history(libreadline: ctypes.CDLL) -> List[bytes]:
         i += 1
     return ret
 
-def get_fzf_result(query: str, history_list: List[bytes]) -> bytes:
+def get_fzf_result(query: bytes, complete_str_list: List[bytes]) -> bytes:
+    if not complete_str_list:
+        return query
+
     args = ['fzf',
             '--print0',
             '--read0',
             '--no-multi',
+            '--tiebreak=index',
             '--height=40%',
             '--layout=reverse',
+            '--print-query',
+            '--select-1',
+            '--cycle',
+            '--bind','tab:down',
             # '--tac', os.environ.get('GDB_FZF_OPTS', ''),
-            '--query', query
+            '--query', query.decode()
             ]
+
     p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     assert(p.stdin)
     assert(p.stdout)
-    for history in history_list:
-        p.stdin.write(history + b'\x00')
-    p.stdin.flush()
-    res = p.stdout.read()
+    out = b'\x00'.join([complete_str for complete_str in complete_str_list if complete_str])
+    p.stdin.write(out)
+    p.stdin.close()
     p.wait()
+    res_array = p.stdout.read().split(b'\x00')[:-1]
+    if not res_array:
+        res = query
+    else:
+        res = res_array[-1]     
     return res
 
 def patch():
     libreadline = get_libreadline()
     assert(libreadline.rl_bind_keyseq(b"\\C-r", fzf_search_history) == 0)
+    assert(libreadline.rl_bind_keyseq(b"\\t", fzf_auto_complete) == 0)
 
 
 patch()

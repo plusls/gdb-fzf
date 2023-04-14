@@ -1,7 +1,7 @@
 # GDB with fzf python plugin
 
 
-This is a patch for GDB that integrates [FZF fuzzy finder](https://github.com/junegunn/fzf) with GDB's history search.
+This is a patch for GDB that integrates [FZF fuzzy finder](https://github.com/junegunn/fzf) with GDB's history search and auto complete.
 
 
 ![example](example.gif)
@@ -36,6 +36,14 @@ set history remove-duplicates unlimited
 set history filename ~/.gdb_eternal_history
 ```
 
+
+## More completions
+
+Set up GDB `max-completions`. Should be added to `~/.gdbinit`.
+
+```
+set max-completions 0x10000 
+```
 ## Reference
 
 + https://github.com/filipkilibarda/gdb_fzf_patch

@@ -73,8 +73,10 @@ def run_gdb_command(command: str) -> bytes:
         return f.read()
 
 
+do_generate_help_file_stop = False
+
+
 def do_generate_help_file(complete_str_list: List[bytes], memfd: int):
-    data = b''
     for complete_str in complete_str_list:
 
         complete_str = complete_str.strip()
@@ -83,12 +85,15 @@ def do_generate_help_file(complete_str_list: List[bytes], memfd: int):
         if not complete_str:
             continue
         try:
-            data += base64.b64encode(gdb.execute(
+            s = base64.b64encode(gdb.execute(
                 f'help {complete_str.decode()}', to_string=True).encode())
-            data += b',' + complete_str + b'\n'
+            s += b',' + complete_str + b'\n'
+            os.write(memfd, s)
         except:
             pass
-    os.write(memfd, data)
+
+        if do_generate_help_file_stop:
+            break
 
 
 def generate_help_file(complete_str_list: List[bytes]) -> Tuple[int, threading.Thread]:
@@ -163,6 +168,10 @@ def get_history_list(libreadline: ctypes.CDLL) -> List[bytes]:
 
 
 def get_fzf_result(query: bytes, complete_str_list: List[bytes]) -> bytes:
+
+    global do_generate_help_file_stop
+    do_generate_help_file_stop = False
+
     if not complete_str_list:
         return query
 
@@ -215,6 +224,7 @@ def get_fzf_result(query: bytes, complete_str_list: List[bytes]) -> bytes:
     res_array = p.stdout.read().split(b'\x00')[:-1]
 
     if HELP:
+        do_generate_help_file_stop = True
         t.join()
         os.close(help_fd)
 

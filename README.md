@@ -13,6 +13,15 @@ This is a patch for GDB that integrates [FZF fuzzy finder](https://github.com/ju
 2. Add `source {Your download path}/gdb-fzf.py` to `~/.gdbinit`
 
 
+You can turn off feature by commenting out
+
+```python
+    assert (libreadline.rl_bind_keyseq(b"\\C-r", fzf_search_history) == 0)
+    assert (libreadline.rl_bind_keyseq(b"\\t", fzf_auto_complete) == 0)
+```
+
+And you also can add your key binding.
+
 ## Better GDB auto complete
 
 Add to `~/.inputrc`

@@ -4,7 +4,7 @@
 This is a patch for GDB that integrates [FZF fuzzy finder](https://github.com/junegunn/fzf) with GDB's history search and auto complete.
 
 
-![example](example.gif)
+![example-complete](example-complete.gif)
 
 ## Installation
 

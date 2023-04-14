@@ -1,8 +1,14 @@
+import base64
 import ctypes
-from typing import List, AnyStr
+from typing import List, Tuple
 import subprocess
 import gdb
 import os
+import asyncio
+import threading
+
+DEFAULT_PORT = 11451
+HELP = True
 
 
 class HIST_ENTRY(ctypes.Structure):
@@ -67,6 +73,32 @@ def run_gdb_command(command: str) -> bytes:
         return f.read()
 
 
+def do_generate_help_file(complete_str_list: List[bytes], memfd: int):
+    data = b''
+    for complete_str in complete_str_list:
+
+        complete_str = complete_str.strip()
+        complete_str = complete_str.split(b'\n')[0].split(b'|')[0]
+
+        if not complete_str:
+            continue
+        try:
+            data += base64.b64encode(gdb.execute(
+                f'help {complete_str.decode()}', to_string=True).encode())
+            data += b',' + complete_str + b'\n'
+        except:
+            pass
+    os.write(memfd, data)
+
+
+def generate_help_file(complete_str_list: List[bytes]) -> Tuple[int, threading.Thread]:
+    memfd = os.memfd_create("gdb-help-file", 0)
+    t = threading.Thread(target=do_generate_help_file,
+                         args=(complete_str_list, memfd))
+    t.start()
+    return memfd, t
+
+
 @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int)
 def fzf_auto_complete(sign: int, key: int) -> int:
     libreadline = get_libreadline()
@@ -74,15 +106,9 @@ def fzf_auto_complete(sign: int, key: int) -> int:
     rl_line_buffer_ptr = ctypes.c_char_p.in_dll(libreadline, "rl_line_buffer")
     query = ctypes.string_at(rl_line_buffer_ptr)
     query_str = query.decode()
-    query_complete_str_list = []
-    history_list = get_history_list(libreadline)
-    history_set = set()
-    for history in history_list:
-        if history.startswith(query):
-            if history not in history_set:
-                history_set.add(history)
-                query_complete_str_list.append(history)
-    del history_set
+
+    query_complete_str_list = get_history_list(libreadline)
+
     if query_str.endswith(' '):
         query_complete_str_list += run_gdb_command(
             f'complete {query_str}').split(b'\n')
@@ -140,6 +166,23 @@ def get_fzf_result(query: bytes, complete_str_list: List[bytes]) -> bytes:
     if not complete_str_list:
         return query
 
+    # 去重
+    new_complete_str_list = []
+    complete_str_set = set()
+    for complete_str in complete_str_list:
+        complete_str = complete_str.strip()
+        if complete_str not in complete_str_set:
+            complete_str_set.add(complete_str)
+            new_complete_str_list.append(complete_str)
+
+    complete_str_list = new_complete_str_list
+    del new_complete_str_list
+
+    if HELP:
+        help_fd, t = generate_help_file(complete_str_list)
+
+    echo_str = "{..}$"
+    pid = os.getpid()
     args = ['fzf',
             '--print0',
             '--read0',
@@ -155,6 +198,12 @@ def get_fzf_result(query: bytes, complete_str_list: List[bytes]) -> bytes:
             '--query', query.decode()
             ]
 
+    if HELP:
+        args += [
+            '--preview',
+            f'cat /proc/{pid}/fd/{help_fd}|grep {echo_str}|awk -F, \'{{print $1}}\'|base64 -d',
+        ]
+
     p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     assert (p.stdin)
     assert (p.stdout)
@@ -164,6 +213,11 @@ def get_fzf_result(query: bytes, complete_str_list: List[bytes]) -> bytes:
     p.stdin.close()
     p.wait()
     res_array = p.stdout.read().split(b'\x00')[:-1]
+
+    if HELP:
+        t.join()
+        os.close(help_fd)
+
     if not res_array:
         res = query
     else:
@@ -177,4 +231,8 @@ def patch():
     assert (libreadline.rl_bind_keyseq(b"\\t", fzf_auto_complete) == 0)
 
 
-patch()
+def main():
+    patch()
+
+
+main()
